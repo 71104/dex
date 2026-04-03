@@ -109,14 +109,16 @@ library OrderBookMethods {
   /// @notice Compares two orders based on the heap order and returns true iff the LHS is more
   ///   extreme than the RHS.
   /// @param orderBook The `OrderBook` instance, used to determine heap direction.
-  /// @param lhs The left hand side of the comparison.
-  /// @param rhs The right hand side of the comparison.
+  /// @param lhsIndex Index of the left hand side of the comparison.
+  /// @param rhsIndex Index of the right hand side of the comparison.
   /// @return True iff the LHS is more extreme than the RHS based on the heap order.
   function compareOrders(
     OrderBook storage orderBook,
-    Order storage lhs,
-    Order storage rhs
+    uint256 lhsIndex,
+    uint256 rhsIndex
   ) private view returns (bool) {
+    Order storage lhs = orderBook.orders[lhsIndex];
+    Order storage rhs = orderBook.orders[rhsIndex];
     if (orderBook.maxHeap) {
       return lhs.price > rhs.price || (lhs.price == rhs.price && lhs.id < rhs.id);
     } else {
@@ -143,9 +145,7 @@ library OrderBookMethods {
   function siftUp(OrderBook storage orderBook, uint256 index) private returns (uint256) {
     while (index > 0) {
       uint256 parentIndex = parentOf(index);
-      Order storage order = orderBook.orders[index];
-      Order storage parent = orderBook.orders[parentIndex];
-      if (compareOrders(orderBook, order, parent)) {
+      if (compareOrders(orderBook, index, parentIndex)) {
         swap(orderBook, index, parentIndex);
         index = parentIndex;
       } else {
@@ -160,19 +160,18 @@ library OrderBookMethods {
   /// @param index The index of the element to move.
   /// @return The index of the slot the element has been moved to.
   function siftDown(OrderBook storage orderBook, uint256 index) private returns (uint256) {
-    Order[] storage orders = orderBook.orders;
     while (leftChildOf(index) < orderBook.orders.length) {
       uint256 leftChildIndex = leftChildOf(index);
       uint256 rightChildIndex = rightChildOf(index);
-      if (compareOrders(orderBook, orders[rightChildIndex], orders[leftChildIndex])) {
-        if (compareOrders(orderBook, orders[index], orders[rightChildIndex])) {
+      if (compareOrders(orderBook, rightChildIndex, leftChildIndex)) {
+        if (compareOrders(orderBook, index, rightChildIndex)) {
           swap(orderBook, index, rightChildIndex);
           index = rightChildIndex;
         } else {
           return index;
         }
       } else {
-        if (compareOrders(orderBook, orders[index], orders[leftChildIndex])) {
+        if (compareOrders(orderBook, index, leftChildIndex)) {
           swap(orderBook, index, leftChildIndex);
           index = leftChildIndex;
         } else {
