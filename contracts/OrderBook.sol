@@ -3,14 +3,17 @@ pragma solidity ^0.8.28;
 
 /// @notice Represents an order.
 /// @dev It's unspecified whether this is a buy or sell order because our `OrderBook` data structure
-///   works for both and each market has two separate order books, one for buy orders and one for
-///   sell orders.
+///   works for both and each market has two separate order books, one for buys and one for sells.
 /// @dev Orders are identified by an incremental ID (the `id` field) that's unique per order book.
 ///   The lowest valid ID is 1 because 0 is used as a sentinel value.
 struct Order {
+  /// @notice The unique incremental identifier for this order within its order book.
   uint256 id;
+  /// @notice The address of the account that issued this order.
   address issuer;
+  /// @notice The number of units to buy or sell.
   uint256 units;
+  /// @notice The limit price per unit.
   uint256 price;
 }
 
@@ -27,30 +30,42 @@ struct Order {
 ///   chronologically, so that if two orders have the same price the one that came first is
 ///   fulfilled first.
 struct OrderBook {
-  /// If true this is a max-heap, otherwise it's a min-heap.
+  /// @notice If true this is a max-heap, otherwise it's a min-heap.
   bool maxHeap;
-  /// This counter generates incremental order IDs and keeps track of the last generated ID. Note
-  /// that ID 0 is conventionally invalid, so it's okay to initialize this field to 0 for an empty
-  /// order book because no order has that ID.
+  /// @notice This counter generates incremental order IDs and keeps track of the last generated ID.
+  ///   Note that ID 0 is conventionally invalid, so it's okay to initialize this field to 0 for an
+  ///   empty order book because no order has that ID.
   uint256 lastOrderId;
-  /// The order array, managed as a binary heap.
+  /// @notice The order array, managed as a binary heap.
   Order[] orders;
-  /// Maps order IDs to their respective indices within the order array.
+  /// @notice Maps order IDs to their respective indices within the order array.
   mapping(uint256 => uint256) orderIndexById;
-  /// Associates order issuers with the list of all their order IDs. Note that orders are not
-  /// cleaned up from this list upon fulfillment or cancellation, they're stored forever.
+  /// @notice Associates order issuers with the list of all their order IDs. Note that orders are
+  ///   not cleaned up from this list upon fulfillment or cancellation, they're stored forever.
   mapping(address => uint256[]) orderIdsByIssuer;
-  /// The sum of all units of all currently tracked orders. Used to calculate the current market
-  /// price as a weighted average.
+  /// @notice The sum of all units of all currently tracked orders. Used to calculate the current
+  ///   market price as a weighted average.
   uint256 unitSum;
-  /// The sum of all prices of all units of all orders, ie. `Sum(price[i] * units[i])`. Used to
-  /// calculate the current market price as a weighted average.
+  /// @notice The sum of all prices of all units of all orders, ie. `Sum(price[i] * units[i])`. Used
+  ///   to calculate the current market price as a weighted average.
   uint256 priceSum;
 }
 
+/// @title OrderBookMethods
+/// @notice Library providing heap-based order book operations for managing and matching limit
+///   orders.
 library OrderBookMethods {
+  /// @notice Thrown when a function receives an invalid argument.
   error InvalidArgument();
+
+  /// @notice Thrown when a function receives an invalid order ID.
+  /// @param orderId The order ID that was not found.
   error InvalidOrderId(uint256 orderId);
+
+  /// @notice Thrown when the caller attempts to cancel an order they did not issue.
+  /// @param orderId The ID of the order the caller tried to cancel.
+  /// @param originalIssuer The address that originally placed the order.
+  /// @param canceler The address that attempted to cancel the order.
   error PermissionDenied(uint256 orderId, address originalIssuer, address canceler);
 
   /// @notice Initializes an `OrderBook`.
@@ -61,29 +76,39 @@ library OrderBookMethods {
     orderBook.maxHeap = !sell;
   }
 
+  /// @notice Returns the number of orders currently in the book.
+  /// @param orderBook The `OrderBook` instance.
   /// @return The number of orders in this book.
   function length(OrderBook storage orderBook) external view returns (uint256) {
     return orderBook.orders.length;
   }
 
-  /// @return The index of the parent of the element at `index`.
+  /// @notice Returns the index of the parent of the element at `index`.
+  /// @param index The index of the child element. Must be greater than 0 because the element at
+  ///   slot 0 is the root and has no parent.
+  /// @return The index of the parent element.
   function parentOf(uint256 index) private pure returns (uint256) {
     assert(index > 0);
     return (index - 1) / 2;
   }
 
-  /// @return The index of the left child of the element at `index`.
+  /// @notice Returns the index of the left child of the element at `index`.
+  /// @param index The index of the parent element.
+  /// @return The index of the left child element.
   function leftChildOf(uint256 index) private pure returns (uint256) {
     return index * 2 + 1;
   }
 
-  /// @return The index of the right child of the element at `index`.
+  /// @notice Returns the index of the right child of the element at `index`.
+  /// @param index The index of the parent element.
+  /// @return The index of the right child element.
   function rightChildOf(uint256 index) private pure returns (uint256) {
     return index * 2 + 2;
   }
 
   /// @notice Compares two orders based on the heap order and returns true iff the LHS is more
   ///   extreme than the RHS.
+  /// @param orderBook The `OrderBook` instance, used to determine heap direction.
   /// @param lhs The left hand side of the comparison.
   /// @param rhs The right hand side of the comparison.
   /// @return True iff the LHS is more extreme than the RHS based on the heap order.
@@ -158,10 +183,19 @@ library OrderBookMethods {
     return index;
   }
 
+  /// @notice Returns the smaller of two values.
+  /// @param a The first value.
+  /// @param b The second value.
+  /// @return The smaller of `a` and `b`.
   function min(uint256 a, uint256 b) private pure returns (uint256) {
     return b < a ? b : a;
   }
 
+  /// @notice Returns a paginated slice of orders from the heap array.
+  /// @param orderBook The `OrderBook` instance.
+  /// @param offset The zero-based index of the first order to return.
+  /// @param count The maximum number of orders to return.
+  /// @return orders An array of at most `count` orders starting at `offset`.
   function getOrders(
     OrderBook storage orderBook,
     uint256 offset,
@@ -173,6 +207,12 @@ library OrderBookMethods {
     }
   }
 
+  /// @notice Returns a paginated slice of orders placed by a specific issuer.
+  /// @param orderBook The `OrderBook` instance.
+  /// @param issuer The address whose orders to retrieve.
+  /// @param offset The zero-based index into the issuer's order list to start from.
+  /// @param count The maximum number of orders to return.
+  /// @return orders An array of at most `count` orders from `issuer` starting at `offset`.
   function getOrdersFrom(
     OrderBook storage orderBook,
     address issuer,
@@ -186,6 +226,11 @@ library OrderBookMethods {
     }
   }
 
+  /// @notice Returns the current market price as the unit-weighted average price across all active
+  ///   orders.
+  /// @dev Returns 0 when the order book is empty.
+  /// @param orderBook The `OrderBook` instance.
+  /// @return The weighted average price, or 0 if there are no active orders.
   function getAveragePrice(OrderBook storage orderBook) external view returns (uint256) {
     if (orderBook.unitSum != 0) {
       return orderBook.priceSum / orderBook.unitSum;
@@ -194,13 +239,20 @@ library OrderBookMethods {
     }
   }
 
+  /// @notice Adds a new order to the book.
+  /// @param orderBook The `OrderBook` instance.
+  /// @param issuer The account placing the order. Must not be zero.
+  /// @param units The number of units to buy or sell. Must be greater than 0.
+  /// @param price The limit price per unit. Must be greater than 0.
+  /// @return id The ID assigned to the newly created order.
   function queueOrder(
     OrderBook storage orderBook,
     address issuer,
     uint256 units,
     uint256 price
   ) external returns (uint256 id) {
-    if (issuer == address(0) || units == 0 || price == 0) {
+    assert(issuer != address(0));
+    if (units == 0 || price == 0) {
       revert InvalidArgument();
     }
     id = ++orderBook.lastOrderId;
@@ -213,6 +265,11 @@ library OrderBookMethods {
     orderBook.priceSum += price * units;
   }
 
+  /// @notice Removes the order at the given heap index and restores heap invariants.
+  /// @dev Uses a sift-up-then-swap-and-sift-down strategy to extract an arbitrary element.
+  /// @param orderBook The `OrderBook` instance.
+  /// @param index The heap array index of the order to extract.
+  /// @return order The extracted order.
   function extractOrder(
     OrderBook storage orderBook,
     uint256 index
@@ -232,6 +289,11 @@ library OrderBookMethods {
     orderBook.orderIndexById[order.id] = 0;
   }
 
+  /// @notice Cancels an active order, removing it from the book and restoring heap invariants.
+  /// @param orderBook The `OrderBook` instance.
+  /// @param issuer The address requesting the cancellation. Must match the order's original issuer.
+  /// @param id The ID of the order to cancel. Must be a valid active order ID.
+  /// @return order The cancelled order.
   function cancelOrder(
     OrderBook storage orderBook,
     address issuer,
@@ -251,6 +313,10 @@ library OrderBookMethods {
     extractOrder(orderBook, index);
   }
 
+  /// @notice Fulfills as many orders as possible using the given number of units at any price.
+  /// @param orderBook The `OrderBook` instance.
+  /// @param units The total number of units to fill.
+  /// @return matches An array of orders (or partial orders) that were matched and filled.
   function fulfill(
     OrderBook storage orderBook,
     uint256 units
@@ -265,6 +331,12 @@ library OrderBookMethods {
     }
   }
 
+  /// @notice Fulfills orders up to the given price limit, consuming as many units as possible.
+  /// @param orderBook The `OrderBook` instance.
+  /// @param units The total number of units to fill.
+  /// @param price The maximum (for buy books) or minimum (for sell books) acceptable price per
+  ///   unit.
+  /// @return matches An array of orders (or partial orders) that were matched and filled.
   function fulfillAt(
     OrderBook storage orderBook,
     uint256 units,
