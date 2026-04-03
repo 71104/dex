@@ -99,6 +99,18 @@ contract Exchange is
     return (market.buyers.getOrders(offset, count), zeroForOne);
   }
 
+  function getBuyOrdersFrom(
+    IERC20 token0,
+    IERC20 token1,
+    address issuer,
+    uint256 offset,
+    uint256 count
+  ) public view returns (Order[] memory orders, bool zeroForOne) {
+    Market storage market;
+    (market, zeroForOne) = _getMarket(token0, token1);
+    return (market.buyers.getOrdersFrom(issuer, offset, count), zeroForOne);
+  }
+
   function getSellOrders(
     IERC20 token0,
     IERC20 token1,
@@ -108,6 +120,18 @@ contract Exchange is
     Market storage market;
     (market, zeroForOne) = _getMarket(token0, token1);
     return (market.sellers.getOrders(offset, count), zeroForOne);
+  }
+
+  function getSellOrdersFrom(
+    IERC20 token0,
+    IERC20 token1,
+    address issuer,
+    uint256 offset,
+    uint256 count
+  ) public view returns (Order[] memory orders, bool zeroForOne) {
+    Market storage market;
+    (market, zeroForOne) = _getMarket(token0, token1);
+    return (market.sellers.getOrdersFrom(issuer, offset, count), zeroForOne);
   }
 
   function buyAt(
@@ -142,7 +166,7 @@ contract Exchange is
 
     token0.safeTransfer(msg.sender, units);
     for (uint256 i = 0; i < matches.length; ++i) {
-      token1.safeTransfer(matches[i].owner, matches[i].price * matches[i].units);
+      token1.safeTransfer(matches[i].issuer, matches[i].price * matches[i].units);
     }
 
     uint256 unfulfilledAmount = units - fulfillment.units;
