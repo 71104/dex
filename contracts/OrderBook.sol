@@ -14,20 +14,37 @@ struct Order {
   uint256 price;
 }
 
-/// @notice An order book for either buy orders or sell orders.
+/// @notice An order book for either buy or sell orders.
 /// @dev At any given time each market has two order books: one for buy orders and one for sell
 ///   orders.
-/// @dev `OrderBook` is implemented as a min-heap of `Order`s ordered by price, so that the order at
-///   the top has the lowest price. Two orders with the same price are ordered by ID low-first.
+/// @dev `OrderBook` is implemented as a binary heap of `Order`s sorted by price. Sell orders are
+///   sorted by lowest price first because buyers are interested in the lowest prices, while buy
+///   orders are sorted by highest price first because sellers are interested in the highest prices.
+///   Therefore, by using a max-heap for buyers and a min-heap for sellers we can achieve optimal
+///   matching. The `maxHeap` flag indicates whether this is a max-heap.
+/// @dev Two orders with the same price are ordered by lowest ID first, regardless of the heap type.
 ///   Since order IDs are incremental, ordering by lowest ID is equivalent to ordering
 ///   chronologically, so that if two orders have the same price the one that came first is
 ///   fulfilled first.
 struct OrderBook {
+  /// If true this is a max-heap, otherwise it's a min-heap.
+  bool maxHeap;
+  /// This counter generates incremental order IDs and keeps track of the last generated ID. Note
+  /// that ID 0 is conventionally invalid, so it's okay to initialize this field to 0 for an empty
+  /// order book because no order has that ID.
   uint256 lastOrderId;
+  /// The order array, managed as a binary heap.
   Order[] orders;
+  /// Maps order IDs to their respective indices within the order array.
   mapping(uint256 => uint256) orderIndexById;
+  /// Associates order issuers with the list of all their order IDs. Note that orders are not
+  /// cleaned up from this list upon fulfillment or cancellation, they're stored forever.
   mapping(address => uint256[]) orderIdsByIssuer;
+  /// The sum of all units of all currently tracked orders. Used to calculate the current market
+  /// price as a weighted average.
   uint256 unitSum;
+  /// The sum of all prices of all units of all orders, ie. `Sum(price[i] * units[i])`. Used to
+  /// calculate the current market price as a weighted average.
   uint256 priceSum;
 }
 
@@ -36,8 +53,16 @@ library OrderBookMethods {
   error InvalidOrderId(uint256 orderId);
   error PermissionDenied(uint256 orderId, address originalIssuer, address canceler);
 
+  /// @notice Initializes an `OrderBook`.
+  /// @dev The `OrderBook` is required to be in a zero state before calling this method.
+  /// @param orderBook The `OrderBook` instance.
+  /// @param sell True if this is for sell orders.
+  function initialize(OrderBook storage orderBook, bool sell) external {
+    orderBook.maxHeap = !sell;
+  }
+
   /// @return The number of orders in this book.
-  function length(OrderBook storage orderBook) public view returns (uint256) {
+  function length(OrderBook storage orderBook) external view returns (uint256) {
     return orderBook.orders.length;
   }
 
@@ -57,13 +82,21 @@ library OrderBookMethods {
     return index * 2 + 2;
   }
 
-  /// @notice Compares two orders based on the heap order and returns true iff the LHS is strictly
-  ///   less (ie. more extreme) than the RHS.
+  /// @notice Compares two orders based on the heap order and returns true iff the LHS is more
+  ///   extreme than the RHS.
   /// @param lhs The left hand side of the comparison.
   /// @param rhs The right hand side of the comparison.
-  /// @return True iff the LHS is strictly less than the RHS based on the heap order.
-  function compareOrders(Order storage lhs, Order storage rhs) private view returns (bool) {
-    return lhs.price < rhs.price || (lhs.price == rhs.price && lhs.id < rhs.id);
+  /// @return True iff the LHS is more extreme than the RHS based on the heap order.
+  function compareOrders(
+    OrderBook storage orderBook,
+    Order storage lhs,
+    Order storage rhs
+  ) private view returns (bool) {
+    if (orderBook.maxHeap) {
+      return lhs.price > rhs.price || (lhs.price == rhs.price && lhs.id < rhs.id);
+    } else {
+      return lhs.price < rhs.price || (lhs.price == rhs.price && lhs.id < rhs.id);
+    }
   }
 
   /// @notice Swaps two elements in the heap.
@@ -87,7 +120,7 @@ library OrderBookMethods {
       uint256 parentIndex = parentOf(index);
       Order storage order = orderBook.orders[index];
       Order storage parent = orderBook.orders[parentIndex];
-      if (compareOrders(order, parent)) {
+      if (compareOrders(orderBook, order, parent)) {
         swap(orderBook, index, parentIndex);
         index = parentIndex;
       } else {
@@ -106,15 +139,15 @@ library OrderBookMethods {
     while (leftChildOf(index) < orderBook.orders.length) {
       uint256 leftChildIndex = leftChildOf(index);
       uint256 rightChildIndex = rightChildOf(index);
-      if (compareOrders(orders[rightChildIndex], orders[leftChildIndex])) {
-        if (compareOrders(orders[index], orders[rightChildIndex])) {
+      if (compareOrders(orderBook, orders[rightChildIndex], orders[leftChildIndex])) {
+        if (compareOrders(orderBook, orders[index], orders[rightChildIndex])) {
           swap(orderBook, index, rightChildIndex);
           index = rightChildIndex;
         } else {
           return index;
         }
       } else {
-        if (compareOrders(orders[index], orders[leftChildIndex])) {
+        if (compareOrders(orderBook, orders[index], orders[leftChildIndex])) {
           swap(orderBook, index, leftChildIndex);
           index = leftChildIndex;
         } else {
@@ -133,7 +166,7 @@ library OrderBookMethods {
     OrderBook storage orderBook,
     uint256 offset,
     uint256 count
-  ) public view returns (Order[] memory orders) {
+  ) external view returns (Order[] memory orders) {
     orders = new Order[](min(orderBook.orders.length - offset, count));
     for (uint256 i = 0; i < orders.length; ++i) {
       orders[i] = orderBook.orders[i + offset];
@@ -145,7 +178,7 @@ library OrderBookMethods {
     address issuer,
     uint256 offset,
     uint256 count
-  ) public view returns (Order[] memory orders) {
+  ) external view returns (Order[] memory orders) {
     uint256[] storage orderIds = orderBook.orderIdsByIssuer[issuer];
     orders = new Order[](min(orderIds.length - offset, count));
     for (uint256 i = 0; i < orders.length; ++i) {
@@ -153,7 +186,7 @@ library OrderBookMethods {
     }
   }
 
-  function getAveragePrice(OrderBook storage orderBook) public view returns (uint256) {
+  function getAveragePrice(OrderBook storage orderBook) external view returns (uint256) {
     if (orderBook.unitSum != 0) {
       return orderBook.priceSum / orderBook.unitSum;
     } else {
@@ -161,12 +194,12 @@ library OrderBookMethods {
     }
   }
 
-  function addOrder(
+  function queueOrder(
     OrderBook storage orderBook,
     address issuer,
     uint256 units,
     uint256 price
-  ) public returns (uint256 id) {
+  ) external returns (uint256 id) {
     if (issuer == address(0) || units == 0 || price == 0) {
       revert InvalidArgument();
     }
@@ -177,7 +210,7 @@ library OrderBookMethods {
     siftUp(orderBook, index);
     orderBook.orderIdsByIssuer[issuer].push(id);
     orderBook.unitSum += units;
-    orderBook.priceSum += price;
+    orderBook.priceSum += price * units;
   }
 
   function extractOrder(
@@ -203,7 +236,7 @@ library OrderBookMethods {
     OrderBook storage orderBook,
     address issuer,
     uint256 id
-  ) public returns (Order memory order) {
+  ) external returns (Order memory order) {
     if (issuer == address(0) || id == 0) {
       revert InvalidArgument();
     }
@@ -221,7 +254,7 @@ library OrderBookMethods {
   function fulfill(
     OrderBook storage orderBook,
     uint256 units
-  ) public returns (Order[] memory matches) {
+  ) external returns (Order[] memory matches) {
     Order[] storage orders = orderBook.orders;
     while (orders.length > 0) {
       if (units < orders[0].units) {
@@ -236,7 +269,7 @@ library OrderBookMethods {
     OrderBook storage orderBook,
     uint256 units,
     uint256 price
-  ) public returns (Order[] memory matches) {
+  ) external returns (Order[] memory matches) {
     Order[] storage orders = orderBook.orders;
     while (orders.length > 0 && orders[0].price <= price) {
       // TODO

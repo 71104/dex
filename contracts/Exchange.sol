@@ -12,6 +12,7 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
 import {Order, OrderBook, OrderBookMethods} from "./OrderBook.sol";
+import {TokenIssuer} from "./Issuer.sol";
 
 interface IERC20WithPermit is IERC20, IERC20Permit {}
 
@@ -40,9 +41,19 @@ contract Exchange is
   using SafeERC20 for IERC20;
   using SafeERC20 for IERC20WithPermit;
 
+  mapping(string => TokenIssuer) private _tokenIssuersByName;
+
   mapping(bytes32 => Market) private _markets;
 
   error InvalidArgument();
+  error TokenIssuerAlreadyExists(string name);
+
+  event CreateTokenIssuer(
+    string indexed name,
+    address indexed issuer,
+    address defaultAdmin,
+    bool decentralized
+  );
 
   /// @custom:oz-upgrades-unsafe-allow constructor
   constructor() {
@@ -62,6 +73,20 @@ contract Exchange is
 
   function unpause() public onlyOwner {
     _unpause();
+  }
+
+  function createTokenIssuer(string memory name) public returns (TokenIssuer issuer) {
+    if (address(_tokenIssuersByName[name]) != address(0)) {
+      revert TokenIssuerAlreadyExists(name);
+    }
+    issuer = new TokenIssuer(name, /*defaultAdmin=*/ msg.sender);
+    _tokenIssuersByName[name] = issuer;
+    emit CreateTokenIssuer(
+      name,
+      address(issuer),
+      /*defaultAdmin=*/ msg.sender,
+      /*decentralized=*/ false
+    );
   }
 
   function _orderByAddress(
@@ -171,9 +196,9 @@ contract Exchange is
 
     uint256 unfulfilledAmount = units - fulfillment.units;
     if (zeroForOne) {
-      market.sellers.addOrder(msg.sender, unfulfilledAmount, price);
+      market.sellers.queueOrder(msg.sender, unfulfilledAmount, price);
     } else {
-      market.buyers.addOrder(msg.sender, unfulfilledAmount, price);
+      market.buyers.queueOrder(msg.sender, unfulfilledAmount, price);
     }
   }
 }
